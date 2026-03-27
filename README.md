@@ -1,7 +1,5 @@
-# Cashflo NLP-to-SQL Query Engine
+# NLP-to-SQL Query Engine
 
-> **Problem B** – Semantic Layer on a Database for NLP-to-Query Conversion
->
 > A Streamlit web application that converts plain-English AP automation
 > questions into correct SQLite SQL via a semantic layer and OpenAI gpt-4.1-mini.
 > Everything is accessible through the browser UI — no CLI.
