@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(py --version)",
+      "Bash(py:*)",
+      "Read(//c/Users/jay.shah/AppData/Local/Programs/**)",
+      "Bash(ls /c/Python*)",
+      "Bash(PYTHON=/c/Users/jay.shah/AppData/Local/anaconda3/python)",
+      "Bash($PYTHON --version)",
+      "Bash($PYTHON -c \":*)",
+      "Bash($PYTHON -c \"import anthropic; print\\(''anthropic version:'', anthropic.__version__\\)\")",
+      "Bash($PYTHON -m pip install anthropic PyYAML -q)",
+      "Bash(uv --version)",
+      "Bash(uv init:*)",
+      "Read(//c/Users/jay.shah/Desktop/Modulr_Projects/Learning/**)",
+      "Bash(1 echo:*)",
+      "Bash(/c/Users/jay.shah/Desktop/Modulr_Projects/Learning/cashflo/.streamlit/config.toml:*)",
+      "Bash(cd /c/Users/jay.shah/Desktop/Modulr_Projects/Learning/cashflo echo \"=== Project files ===\")",
+      "Read(//c/Users/jay.shah/Desktop/Modulr_Projects/Learning/cashflo/**)",
+      "Bash(.venv/Scripts/python --version echo \"\" echo \"=== uv sync check ===\")",
+      "Bash(uv sync:*)",
+      "Bash(cd /c/Users/jay.shah/Desktop/Modulr_Projects/Learning/cashflo find . -not -path './.venv/*' -not -path './.git/*' -not -path './__pycache__/*' -not -path './engine/__pycache__/*' -not -name '*.pyc')",
+      "Bash(cd /c/Users/jay.shah/Desktop/Modulr_Projects/Learning/cashflo __NEW_LINE_ba122334e78b2d82__ echo \"=== Files ===\" find . -not -path './.venv/*' -not -path './.git/*' -not -path '*/__pycache__/*' -not -name '*.pyc' -not -name 'uv.lock' -not -path './.claude/*')"
+    ]
+  }
+}

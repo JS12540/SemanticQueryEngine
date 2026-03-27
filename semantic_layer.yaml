@@ -1,0 +1,428 @@
+##############################################################################
+# Cashflo AP Automation – Semantic Layer Configuration
+#
+# This file is the "business dictionary" that sits between plain-English
+# questions and the raw SQLite schema.  Every section is consumed by the
+# NLP-to-SQL engine so the LLM has structured context rather than raw DDL.
+#
+# Sections
+# --------
+# tables       – per-table metadata (description, synonyms, columns)
+# relationships – join paths between tables
+# metrics      – named, pre-defined aggregations ("revenue", "outstanding")
+# synonyms     – global word → concept mappings
+# temporal     – how to translate time expressions to SQL date ranges
+##############################################################################
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TABLES
+# ─────────────────────────────────────────────────────────────────────────────
+tables:
+
+  companies:
+    description: "Buyer entities that raise purchase orders and receive invoices. All transactions belong to one of these two companies."
+    synonyms: [buyer, entity, organisation, organization, client_company]
+    columns:
+      id:           { type: integer, desc: "Primary key" }
+      name:         { type: text,    desc: "Legal name of the company" }
+      gstin:        { type: text,    desc: "GST Identification Number" }
+      pan:          { type: text,    desc: "Permanent Account Number for tax purposes" }
+      state_code:   { type: text,    desc: "Two-digit state code for GST" }
+      city:         { type: text,    desc: "City where the company is registered" }
+      is_buyer:     { type: boolean, desc: "1 = this company is a buyer (always true in this dataset)" }
+
+  departments:
+    description: "Cost centres within a company. Each purchase order is raised by a department and charged to its annual budget."
+    synonyms: [dept, cost_centre, cost_center, team, division]
+    columns:
+      id:             { type: integer, desc: "Primary key" }
+      company_id:     { type: integer, desc: "FK → companies.id" }
+      name:           { type: text,    desc: "Department name (Engineering, Operations, Marketing, HR)" }
+      head_name:      { type: text,    desc: "Name of the department head" }
+      head_email:     { type: text,    desc: "Email of the department head" }
+      budget_annual:  { type: decimal, desc: "Annual budget in INR for this department" }
+
+  vendors:
+    description: "Supplier master – companies that supply goods or services. Includes credit rating, payment terms, city, and a watchlist flag for high-risk vendors."
+    synonyms: [supplier, seller, party, counterparty]
+    columns:
+      id:                  { type: integer, desc: "Primary key" }
+      name:                { type: text,    desc: "Vendor/supplier legal name" }
+      gstin:               { type: text,    desc: "GST Identification Number of the vendor" }
+      pan:                 { type: text,    desc: "Permanent Account Number of the vendor" }
+      state_code:          { type: text,    desc: "State code (used to determine CGST+SGST vs IGST)" }
+      city:                { type: text,    desc: "City of the vendor" }
+      payment_terms_days:  { type: integer, desc: "Standard credit period in days (30 or 60)" }
+      is_watchlist:        { type: boolean, desc: "1 = vendor is flagged for enhanced scrutiny" }
+      rating:              { type: enum,    values: [A, B, C, D], desc: "Vendor performance rating; A is best, D is worst" }
+      onboarded_date:      { type: date,    desc: "Date the vendor was registered in the system" }
+
+  products:
+    description: "Item/service catalogue. Each product has a category, HSN code for GST classification, and a standard rate per unit."
+    synonyms: [item, sku, service, goods, material]
+    columns:
+      id:            { type: integer, desc: "Primary key" }
+      code:          { type: text,    desc: "Unique product code (e.g. SRV-001, HW-002)" }
+      name:          { type: text,    desc: "Human-readable product name" }
+      category:      { type: text,    desc: "Category: IT Services, Hardware, Stationery, Facility, Consulting, Logistics, Chemicals" }
+      hsn_code:      { type: text,    desc: "HSN/SAC code for GST" }
+      unit:          { type: text,    desc: "Unit of measurement (NOS, MOS, PKT, DAY)" }
+      standard_rate: { type: decimal, desc: "Standard catalogue price per unit in INR" }
+
+  purchase_orders:
+    description: "Purchase orders (POs) raised by a company's department to a vendor. They authorise procurement up to a total amount."
+    synonyms: [po, order, purchase, procurement]
+    columns:
+      id:            { type: integer, desc: "Primary key" }
+      po_number:     { type: text,    desc: "Unique PO reference (e.g. PO-2025-0001)" }
+      company_id:    { type: integer, desc: "FK → companies.id – which company raised the PO" }
+      vendor_id:     { type: integer, desc: "FK → vendors.id – which vendor the PO is addressed to" }
+      department_id: { type: integer, desc: "FK → departments.id – which department initiated the PO" }
+      po_date:       { type: date,    desc: "Date the PO was created" }
+      total_amount:  { type: decimal, desc: "Total pre-tax value of all line items in INR" }
+      status:        { type: enum,    values: [draft, approved, partially_received, received, closed, cancelled],
+                       desc: "Lifecycle status of the PO" }
+      approved_by:   { type: text,    desc: "Name or role of the approver" }
+      created_at:    { type: timestamp, desc: "Record creation timestamp" }
+
+  po_line_items:
+    description: "Individual line items on a purchase order – product, quantity, rate, and pre-tax total."
+    synonyms: [po_line, order_line, po_item]
+    columns:
+      id:           { type: integer, desc: "Primary key" }
+      po_id:        { type: integer, desc: "FK → purchase_orders.id" }
+      product_id:   { type: integer, desc: "FK → products.id" }
+      quantity:     { type: decimal, desc: "Ordered quantity" }
+      unit_rate:    { type: decimal, desc: "Agreed rate per unit in INR" }
+      total_amount: { type: decimal, desc: "quantity × unit_rate (pre-tax) in INR" }
+      tax_rate:     { type: decimal, desc: "Applicable GST tax rate as a percentage (default 18%)" }
+
+  grns:
+    description: "Goods Receipt Notes (GRNs) – documents confirming delivery of goods or services against a PO. The three-way match is PO ↔ GRN ↔ Invoice."
+    synonyms: [grn, goods_receipt, delivery_note, receipt]
+    columns:
+      id:          { type: integer, desc: "Primary key" }
+      grn_number:  { type: text,    desc: "Unique GRN reference (e.g. GRN-2025-0001)" }
+      po_id:       { type: integer, desc: "FK → purchase_orders.id" }
+      vendor_id:   { type: integer, desc: "FK → vendors.id" }
+      grn_date:    { type: date,    desc: "Date goods/services were received" }
+      received_by: { type: text,    desc: "Name/role of the person who received the goods" }
+      status:      { type: enum,    values: [draft, confirmed, partial],
+                     desc: "confirmed = fully received; partial = only some items received" }
+
+  grn_line_items:
+    description: "Individual line items on a GRN – what was actually received vs what was ordered."
+    synonyms: [grn_line, receipt_line]
+    columns:
+      id:                 { type: integer, desc: "Primary key" }
+      grn_id:             { type: integer, desc: "FK → grns.id" }
+      product_id:         { type: integer, desc: "FK → products.id" }
+      po_line_item_id:    { type: integer, desc: "FK → po_line_items.id – which PO line this receipt corresponds to" }
+      quantity_received:  { type: decimal, desc: "Quantity actually received" }
+      quantity_rejected:  { type: decimal, desc: "Quantity rejected due to quality issues" }
+      remarks:            { type: text,    desc: "Any notes from the receiving team" }
+
+  invoices:
+    description: "Invoices submitted by vendors for payment. Each invoice links to a vendor, a company, and a PO. Status tracks the AP workflow lifecycle."
+    synonyms: [bill, bills, payable, payables, invoice, invoices, tax_invoice]
+    columns:
+      id:                   { type: integer, desc: "Primary key" }
+      invoice_number:       { type: text,    desc: "Unique invoice reference (e.g. INV-03-00002)" }
+      vendor_id:            { type: integer, desc: "FK → vendors.id" }
+      company_id:           { type: integer, desc: "FK → companies.id – which company received this invoice" }
+      po_id:                { type: integer, desc: "FK → purchase_orders.id – associated purchase order" }
+      invoice_date:         { type: date,    desc: "Date printed on the invoice" }
+      due_date:             { type: date,    desc: "Payment due date (invoice_date + vendor payment terms)" }
+      total_taxable_amount: { type: decimal, desc: "Sum of all line items before tax in INR" }
+      total_tax:            { type: decimal, desc: "Total GST (CGST+SGST+IGST) in INR" }
+      grand_total:          { type: decimal, desc: "Invoice value including all taxes in INR – the amount to be paid" }
+      currency:             { type: text,    desc: "Currency code (always INR in this dataset)" }
+      status:         { type: enum, values: [received, validated, approved, rejected, on_hold, paid, partially_paid], desc: "AP workflow status: received=logged; validated=3-way match passed; approved=authorised; rejected=vendor must resubmit; on_hold=investigation; paid=fully paid; partially_paid=partial payment made" }
+      deviation_type:   { type: text, desc: "Type of three-way match deviation (Rate Mismatch, Quantity Mismatch, Missing GRN, etc.)" }
+      deviation_details: { type: text, desc: "Detailed description of the deviation" }
+      approved_by:      { type: text, desc: "Role/name of the approver" }
+      approval_date:    { type: date, desc: "Date the invoice was approved" }
+      created_at:       { type: timestamp, desc: "Record creation timestamp" }
+
+  invoice_line_items:
+    description: "Individual line items on an invoice – product, quantity, rate, base amount, and tax breakdown (CGST, SGST, IGST)."
+    synonyms: [invoice_line, bill_line]
+    columns:
+      id:           { type: integer, desc: "Primary key" }
+      invoice_id:   { type: integer, desc: "FK → invoices.id" }
+      product_id:   { type: integer, desc: "FK → products.id" }
+      description:  { type: text,    desc: "Free-text description (can be null)" }
+      hsn_code:     { type: text,    desc: "HSN/SAC code at line level" }
+      quantity:     { type: decimal, desc: "Invoiced quantity" }
+      unit_rate:    { type: decimal, desc: "Rate per unit in INR" }
+      total_amount: { type: decimal, desc: "quantity × unit_rate before tax in INR" }
+      cgst:         { type: decimal, desc: "Central GST amount in INR (intra-state transactions)" }
+      sgst:         { type: decimal, desc: "State GST amount in INR (intra-state transactions)" }
+      igst:         { type: decimal, desc: "Integrated GST amount in INR (inter-state transactions)" }
+
+  payments:
+    description: "Payments made against invoices. One invoice can have multiple payments (partial payments). Tracks payment mode and bank reference."
+    synonyms: [payment, disbursement, remittance, transaction]
+    columns:
+      id:               { type: integer, desc: "Primary key" }
+      invoice_id:       { type: integer, desc: "FK → invoices.id" }
+      payment_date:     { type: date,    desc: "Date the payment was made" }
+      amount:           { type: decimal, desc: "Amount paid in INR" }
+      payment_mode:     { type: enum,    values: [NEFT, RTGS, UPI, cheque], desc: "Mode of payment" }
+      reference_number: { type: text,    desc: "Bank transaction reference number" }
+      bank_account:     { type: text,    desc: "Bank account used (masked)" }
+
+  approval_matrix:
+    description: "Amount-based approval tier lookup. Determines who must approve an invoice based on its grand_total value."
+    synonyms: [approval_tiers, approval_rules, authorisation_matrix]
+    columns:
+      id:             { type: integer, desc: "Primary key" }
+      min_amount:     { type: decimal, desc: "Lower bound of the approval tier in INR" }
+      max_amount:     { type: decimal, desc: "Upper bound of the approval tier in INR" }
+      approver_role:  { type: text,    desc: "Role required to approve (Auto, Department Head, Finance Controller, CFO)" }
+      approver_name:  { type: text,    desc: "Name of the designated approver" }
+      approver_email: { type: text,    desc: "Email of the designated approver" }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RELATIONSHIPS (join paths)
+# ─────────────────────────────────────────────────────────────────────────────
+relationships:
+  direct:
+    - { from: departments,        to: companies,        join: "departments.company_id = companies.id" }
+    - { from: purchase_orders,    to: companies,        join: "purchase_orders.company_id = companies.id" }
+    - { from: purchase_orders,    to: vendors,          join: "purchase_orders.vendor_id = vendors.id" }
+    - { from: purchase_orders,    to: departments,      join: "purchase_orders.department_id = departments.id" }
+    - { from: po_line_items,      to: purchase_orders,  join: "po_line_items.po_id = purchase_orders.id" }
+    - { from: po_line_items,      to: products,         join: "po_line_items.product_id = products.id" }
+    - { from: grns,               to: purchase_orders,  join: "grns.po_id = purchase_orders.id" }
+    - { from: grns,               to: vendors,          join: "grns.vendor_id = vendors.id" }
+    - { from: grn_line_items,     to: grns,             join: "grn_line_items.grn_id = grns.id" }
+    - { from: grn_line_items,     to: products,         join: "grn_line_items.product_id = products.id" }
+    - { from: grn_line_items,     to: po_line_items,    join: "grn_line_items.po_line_item_id = po_line_items.id" }
+    - { from: invoices,           to: vendors,          join: "invoices.vendor_id = vendors.id" }
+    - { from: invoices,           to: companies,        join: "invoices.company_id = companies.id" }
+    - { from: invoices,           to: purchase_orders,  join: "invoices.po_id = purchase_orders.id" }
+    - { from: invoice_line_items, to: invoices,         join: "invoice_line_items.invoice_id = invoices.id" }
+    - { from: invoice_line_items, to: products,         join: "invoice_line_items.product_id = products.id" }
+    - { from: payments,           to: invoices,         join: "payments.invoice_id = invoices.id" }
+
+  multi_hop:
+    - path: "invoices to departments"
+      via:  "invoices.po_id = purchase_orders.id AND purchase_orders.department_id = departments.id"
+      description: "To find the department for an invoice, go through the linked purchase order."
+    - path: "invoice_line_items to products via invoice"
+      via:  "invoice_line_items.invoice_id = invoices.id AND invoice_line_items.product_id = products.id"
+    - path: "payments to vendors via invoice"
+      via:  "payments.invoice_id = invoices.id AND invoices.vendor_id = vendors.id"
+    - path: "grn_line_items to po_line_items to products"
+      via:  "grn_line_items.po_line_item_id = po_line_items.id AND po_line_items.product_id = products.id"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BUSINESS METRICS
+# Pre-defined aggregations with business meaning.
+# The engine expands these before passing context to the LLM.
+# ─────────────────────────────────────────────────────────────────────────────
+metrics:
+
+  revenue:
+    sql: "SUM(invoices.grand_total) FILTER (WHERE invoices.status = 'paid')"
+    description: "Total value of fully paid invoices (INR). Represents cash that has actually left the company."
+    synonyms: [income, earnings, total_paid, amount_paid]
+
+  outstanding:
+    sql: "SUM(invoices.grand_total) FILTER (WHERE invoices.status IN ('approved','validated','on_hold'))"
+    description: "Total unpaid invoice value that is in the pipeline for payment (INR)."
+    synonyms: [unpaid, outstanding_amount, pending_payment, due, dues, amount_due]
+
+  overdue:
+    sql: "SUM(invoices.grand_total) FILTER (WHERE invoices.status IN ('approved','validated','on_hold') AND invoices.due_date < DATE('now'))"
+    description: "Outstanding invoice value where the due date has already passed."
+    synonyms: [past_due, late, overdue_amount]
+
+  total_invoice_value:
+    sql: "SUM(invoices.grand_total)"
+    description: "Sum of all invoice grand totals regardless of status."
+    synonyms: [total_billed, total_invoiced, gross_invoice_value]
+
+  invoice_count:
+    sql: "COUNT(DISTINCT invoices.id)"
+    description: "Number of distinct invoices."
+    synonyms: [number_of_invoices, invoice_volume, count_of_bills]
+
+  avg_invoice_value:
+    sql: "AVG(invoices.grand_total)"
+    description: "Average value per invoice in INR."
+    synonyms: [average_invoice, mean_invoice_value]
+
+  total_tax:
+    sql: "SUM(invoices.total_tax)"
+    description: "Total GST paid across all invoices."
+    synonyms: [gst_amount, tax_paid, total_gst]
+
+  payments_made:
+    sql: "SUM(payments.amount)"
+    description: "Total cash disbursed via payments table."
+    synonyms: [cash_out, disbursements, total_payments]
+
+  vendor_count:
+    sql: "COUNT(DISTINCT vendors.id)"
+    description: "Number of distinct active vendors."
+    synonyms: [number_of_vendors, supplier_count]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GLOBAL SYNONYMS
+# Maps user vocabulary → canonical table/column/value terms.
+# ─────────────────────────────────────────────────────────────────────────────
+synonyms:
+  # Table synonyms
+  bills:         invoices
+  bill:          invoices
+  payables:      invoices
+  receivables:   invoices          # from vendor's perspective
+  receipts:      grns
+  delivery_notes: grns
+  orders:        purchase_orders
+  po:            purchase_orders
+  pos:           purchase_orders
+  items:         invoice_line_items
+  line_items:    invoice_line_items
+  disbursements: payments
+
+  # Status / condition synonyms
+  unpaid:         "invoices.status IN ('received','validated','approved','on_hold')"
+  outstanding:    "invoices.status IN ('approved','validated','on_hold')"
+  paid:           "invoices.status = 'paid'"
+  overdue:        "invoices.due_date < DATE('now') AND invoices.status NOT IN ('paid','rejected')"
+  pending:        "invoices.status IN ('received','validated')"
+  approved:       "invoices.status = 'approved'"
+  rejected:       "invoices.status = 'rejected'"
+  on_hold:        "invoices.status = 'on_hold'"
+  watchlist:      "vendors.is_watchlist = 1"
+  high_risk:      "vendors.is_watchlist = 1"
+  blocked:        "vendors.is_watchlist = 1"
+
+  # Amount / value synonyms
+  value:       grand_total
+  amount:      grand_total
+  total:       grand_total
+  worth:       grand_total
+  INR:         grand_total
+
+  # People / entity synonyms
+  client:      companies
+  buyer:       companies
+  supplier:    vendors
+  partner:     vendors
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPORAL EXPRESSIONS
+# Maps plain-English time phrases to SQL DATE() expressions.
+# The engine substitutes the current date at query time.
+# ─────────────────────────────────────────────────────────────────────────────
+temporal:
+  today:
+    sql: "DATE('now')"
+    description: "Today's date"
+
+  yesterday:
+    sql: "DATE('now', '-1 day')"
+    description: "Yesterday"
+
+  this_week:
+    start: "DATE('now', 'weekday 0', '-7 days')"
+    end:   "DATE('now')"
+    description: "Current calendar week (Sunday to today)"
+
+  last_week:
+    start: "DATE('now', 'weekday 0', '-14 days')"
+    end:   "DATE('now', 'weekday 0', '-7 days', '-1 day')"
+    description: "Previous calendar week"
+
+  this_month:
+    start: "DATE('now', 'start of month')"
+    end:   "DATE('now')"
+    description: "From the first of the current month to today"
+
+  last_month:
+    start: "DATE('now', 'start of month', '-1 month')"
+    end:   "DATE('now', 'start of month', '-1 day')"
+    description: "Entire previous calendar month"
+
+  this_quarter:
+    description: >
+      Current financial quarter. Use SQLite CASE to compute:
+      Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec.
+      start = first day of current quarter, end = today.
+    sql_start: >
+      DATE(strftime('%Y', 'now') || '-' ||
+           CASE CAST(strftime('%m','now') AS INTEGER)
+             WHEN 1 THEN '01' WHEN 2 THEN '01' WHEN 3 THEN '01'
+             WHEN 4 THEN '04' WHEN 5 THEN '04' WHEN 6 THEN '04'
+             WHEN 7 THEN '07' WHEN 8 THEN '07' WHEN 9 THEN '07'
+             ELSE '10' END || '-01')
+    sql_end: "DATE('now')"
+
+  last_quarter:
+    description: >
+      Previous calendar quarter.
+    sql_hint: >
+      Compute by subtracting 3 months from the start of the current quarter.
+      start = first day of previous quarter, end = last day of previous quarter.
+
+  this_year:
+    start: "DATE('now', 'start of year')"
+    end:   "DATE('now')"
+    description: "From 1 Jan of the current year to today"
+
+  last_year:
+    start: "DATE('now', 'start of year', '-1 year')"
+    end:   "DATE('now', 'start of year', '-1 day')"
+    description: "Entire previous calendar year (1 Jan to 31 Dec)"
+
+  fy_current:
+    description: "Current Indian financial year (Apr to Mar)"
+    sql_hint: >
+      Indian FY runs April 1 – March 31.
+      If current month >= 4: FY start = YYYY-04-01, end = (YYYY+1)-03-31.
+      If current month < 4:  FY start = (YYYY-1)-04-01, end = YYYY-03-31.
+
+  fy_last:
+    description: "Previous Indian financial year"
+    sql_hint: >
+      One year before fy_current.
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AMBIGUITY RULES
+# When a question is under-specified, these rules tell the engine what to
+# clarify vs what default to assume.
+# ─────────────────────────────────────────────────────────────────────────────
+ambiguity_rules:
+
+  top_vendors:
+    trigger: "top vendors"
+    options:
+      - { label: "by total invoice value",   default: true,  sql_order: "SUM(invoices.grand_total) DESC" }
+      - { label: "by invoice count",         default: false, sql_order: "COUNT(invoices.id) DESC" }
+      - { label: "by payment received",      default: false, sql_order: "SUM(payments.amount) DESC" }
+      - { label: "by vendor rating",         default: false, sql_order: "vendors.rating ASC" }
+    default_assumption: "Assuming 'top vendors' means highest total invoice value."
+
+  top_products:
+    trigger: "top products"
+    options:
+      - { label: "by invoiced quantity", default: true }
+      - { label: "by total invoiced value" }
+    default_assumption: "Assuming 'top products' means highest total invoiced value."
+
+  outstanding_vs_overdue:
+    trigger: "outstanding"
+    default_assumption: "Assuming 'outstanding' means invoices not yet paid (status in approved/validated/on_hold), not specifically overdue (past due_date)."
+
+  compare_quarters:
+    trigger: "compare quarter"
+    default_assumption: "Assuming comparison is between this quarter and the immediately preceding quarter, by invoice count and total value."
