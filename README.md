@@ -10,35 +10,8 @@
 
 ## Architecture
 
-```
-Browser (Streamlit UI)
-        │
-        ▼
-┌─────────────────────────────────────────────────────┐
-│                   app.py                            │
-│  CashfloApp → Sidebar + Chat UI + ResultRenderer    │
-│  + PipelineLog panel (step-by-step trace)           │
-└───────────────────────┬─────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────────┐
-│             engine/nlp_to_sql.py                    │
-│  NLPtoSQLEngine.query()                             │
-│    1. detect_ambiguity  → assumption                │
-│    2. cache.lookup      → skip LLM on hit           │
-│    3. OpenAI gpt-4.1-mini → generate SQL            │
-│    4. validate_sql      → SQLite EXPLAIN            │
-│    5. self-correct      → LLM retry on error        │
-│    6. executor.execute  → QueryResult               │
-│    7. OpenAI gpt-4.1-mini → plain-English explanation│
-│    8. cache.store                                   │
-│  Emits PipelineLogger events at every step          │
-└───────┬──────────────┬──────────────┬───────────────┘
-        │              │              │
-        ▼              ▼              ▼
-  SemanticLayer   QueryExecutor  QueryCache
-  (YAML config)   (SQLite)       (SQLite, TF-IDF)
-```
+![Architecture Diagram](architecture.svg)
+
 
 ### Project layout
 
